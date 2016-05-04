@@ -1,0 +1,723 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE nta PUBLIC '-//Uppaal Team//DTD Flat System 1.1//EN' 'http://www.it.uu.se/research/group/darts/uppaal/flat-1_2.dtd'>
+<nta>
+	<declaration>const int Nc=20; //Numero dei veicoli
+const int Ni=10; //Numero delle intersezioni
+const int Ns=13; //Numero dei segmenti
+clock time;      //Tempo globale del sistema (tempo che scorre durante la simulazione)
+
+typedef int[0,Nc-1] id_c;    //Assegno un identificativo ad ogni veicolo
+typedef int[0,Ni-1] id_i;    //Assegno un identificativo ad ogni intersezione
+typedef int[0,Ns-1] id_s;    //Assegno un identificativo ad ogni segmento
+
+int [0,Nc] count=0;
+
+int settings;    //Numero delle auto configurate
+
+const int dist=100;    //distanza di verifica per l'anomalia
+
+/**INIZIO Costruzione MAPPA*/
+
+/*Matrice Intersezione-Segmenti*/
+const int Map[id_i][4]= {
+{6,10,11,-1},//Intersezione 0--&gt;Posso entrare nel: Segmento 6, Segmento 10, Segmento 11
+{5,8,9,-1  },//Intersezione 1
+{4,5,6,7   },//Intersezione 2
+{2,3,7,-1  },//Intersezione 3
+{0,4,12,-1 },//Intersezione 4
+{3,12,-1,-1},//Intersezione 5
+{0,11,-1,-1},//Intersezione 6
+{2,8,-1,-1 },//Intersezione 7
+{1,9,-1,-1 },//Intersezione 8
+{1,10,-1,-1} //Intersezione 9
+};
+
+/*Matrice Segmento-Intersezioni-0=dx e alto,1=sx e basso*/
+const int nInters[id_s][2]={
+{6,4},//Segmento 0--&gt;Intersezione 6 se percorrso il segmento verso DESTRA, Intersezione 4 se verso SINISTRA
+{9,8},//Segmento 1
+{7,3},//Segmento 2
+{3,5},//Segmento 3
+{2,4},//Segmento 4
+{1,2},//Segmento 5
+{0,2},//Segmento 6
+{2,3},//Segmento 7
+{1,7},//Segmento 8
+{8,1},//Segmento 9
+{9,0},//Segmento 10
+{0,6},//Segmento 11
+{4,5} //Segmento 12
+};
+
+/*Struttura per gestire e memorizzare le coordinate delle Intersezioni*/
+typedef struct
+{
+    int Px;//Coordinata X dell'Intersezione
+    int Py;//Coordinata Y dell'Intersezione
+} Int;
+
+/*Vengo instanziate Ni strutture di tipo Int poichè Ni sono le intersezioni alle quali dobbiamo assegnare le coordinate*/
+Int I[Ni]={
+{1000,1000},//Intersezione 0 ha coordinate (1000,1000)
+{1500,400 },//Intersezione 1
+{1000,400 },//Intersezione 2
+{1000,0   },//Intersezione 3
+{0,400    },//Intersezione 4
+{0,0      },//Intersezione 5
+{0,1000   },//Intersezione 6
+{1500,0   },//Intersezione 7
+{2000,400 },//Intersezione 8
+{2000,1000} //Intersezione 9
+};
+
+/*Struttura per gestire e memorizzare le proprietà del Segmento (Lunghezza, Numero dei veicoli corsia SX-DX)*/
+typedef struct
+{
+int length;     //Lunghezza del Segmento
+int nc_l;      //Veicoli presenti sulla corsia di sinistra
+int nc_r;     //Veicoli presenti sulla corsia di destra
+bool expressway; //1=Tratto a scorrimento veloce, 0=Tratto a scorrimento lento
+} Str;
+
+/*Vengono instanziate le proprietà per ogni Segmento Ns*/
+
+Str S[Ns]= {
+{600,0,0,0 },//Segmento 0--&gt;Lunghezza, Numero dei veicoli corsia SX, Numero dei veicoli corsia DX
+{600,0,0,1 },//Segmento 1
+{500,0,0,0 },//Segmento 2
+{1000,0,0,1},//Segmento 3
+{1000,0,0,0},//Segmento 4
+{500,0,0,0 },//Segmento 5
+{600,0,0,0 },//Segmento 6
+{400,0,0,0 },//Segmento 7
+{400,0,0,0 },//Segmento 8
+{500,0,0,1 },//Segmento 9
+{1000,0,0,1},//Segmento 10
+{1000,0,0,0},//Segmento 11
+{400,0,0,1 } //Segmento 12
+};
+
+const int speedmax_way=40; //Velocità massima sui tratti a scorrimento veloce
+const int slowmax_way=15;  //Velocità minima sui tratti a scorrimento lento
+
+/**FINE Costruzione MAPPA*/
+
+
+/**INIZIO Costruzione MODELLO di Trasmissione*/
+broadcast chan msg[Nc];//Creo Nc canali di broadcast per quanti sono i veicoli (ogni veicolo ha un canale di trasmissione)
+broadcast chan setA[Nc];
+broadcast chan alert[Ni];
+//chan priority default &lt; alert;
+
+const int GEN=2; //Tipo Messaggio generato
+const int REL=3; //Tipo Messaggio di relay
+
+/*Con msg[id]! invio sul canale, mentre con msg[id]? ricevo*/
+
+/*Struttura del contenuto del messaggio trasmesso*/
+typedef struct
+{
+int type;    //Tipologia del messaggio (Generated=2,Relay=3)
+int Vx;      //Coordinata corrente x del veicolo
+int Vy;      //Coordinata corrente y del veicolo
+int cur_seg; //Segmento corrente del veicolo
+bool dir;    //Direzione di marcia del veicolo (0=DX,1=SX)
+bool anomaly;//Nel messaggio deve essere segnalata un'anomalia o meno (0=NO,1=SI)
+int VxA;     //Coordinata x dell'anomalia
+int VyA;     //Coordinata y dell'anomalia
+} Msg;
+
+/*Creo Nc strutture (tante quante sono i veicoli) per gestire i messaggi da inviare e quelli ricevuti*/
+Msg Mgen[Nc];
+Msg Mrec[Nc];
+
+Msg RSUAnomaly[Ni];
+int RR=400; //raggio di trasmissione RSU
+
+/**FINE Costruzione MODELLO di Trasmissione*/
+
+
+/**INIZIO Impostazioni veicoli*/
+
+const int r=250;    //raggio di trasmissione dell'antenna
+
+const int slow_speed=6;   //Velocità minima del veicolo
+const int mean_speed=20;   //Velocità media del veicolo
+const int high_speed=50;   //Velocità massima del veicolo
+
+/**Broadcast Period*/
+const int BP=7; //Broadcast Period espresso in secondi
+
+/**FINE Impostazioni veicoli*/
+
+/**INIZIO Funzione ABS*/
+int abs(int value)
+{
+if (value&lt;0) value=-value;
+return value;
+}
+/**FINE Funzione ABS*/
+
+/**INIZIO Funzione per il calcolo della distanza tra 2 punti della mappa*/
+int distance(int x1,int y1, int x2, int y2)
+{
+//Distanza di Manhattan P1 = (x1,y1), P2 = (x2,y2) ;  L(P1,P2) = |x1-x2|+|y1-y2|
+return abs(x1-x2) + abs(y1-y2);
+}
+/**FINE Funzione*/
+
+dynamic RSU(const id_i idR, int idc);</declaration>
+	<template>
+		<name x="5" y="5">Car</name>
+		<parameter>const id_c idcar</parameter>
+		<declaration>/*
+id_c è l'id che rappresenta le auto (in generale)
+idcar è l'id locale del veicolo
+Nel template nella transazione da Car a Car, dove viene richiamata la receive(e), vado a selezionare con la select e:id_c l'auto che 
+mi sta inviando il messaggio da una delle 9 auto (id_c).
+idcar è l'id proprio del veicolo Car, con il quale invio il messaggio (vedi transizione dove c'è la sendRelay).
+*/
+
+/*
+Le altre condizioni immesse negli edge "isAnomaly=false" vengono eseguite solo quando il veicolo non si trova nello stato
+di anomalia e cioè "isAnomaly=true".
+*/
+
+
+/**INIZIO Impostazione Parametri per ogni SINGOLO Veicolo*/
+clock x; //Clock per gestire il tempo del veicolo
+
+/**Gestione VELOCITA'*/
+int cur_speed;    //Velocità corrente del veicolo espressa in m/s
+
+/**Gestione POSIZIONE*/
+bool dir; //Direzione del veicolo
+int cur_seg;  //Segmento corrente del veicolo
+int Vx,Vy;    //Coordinate del veicolo
+int VxA=-1;   //Coordinata X anomalia del veicolo (-1 non è settata fino a quando non entra nello stato di Anomalia)
+int VyA=-1;   //Coordinata Y anomalia del veicolo
+int tCross;   //Tempo per poter percorrere il segmento
+int crossed;  //(Tratto del segmento percorso)
+int posIn;    //Posizione iniziale del veicolo
+int nextI;    //Prossima Intersezione che incontrerà il veicolo
+int prevI;    //Intersezione precedente del Veicolo
+
+/**Gestione ANOMALIA*/
+bool isAnomaly;         //Verifico quando il veicolo è nello stato di anomalia
+bool anomaly_rcv=false; //imposto inizialmente che il veicolo non abbia ricevuto l'anomalia
+
+/**FINE Impostazione Parametri per ogni SINGOLO Veicolo*/
+
+/**Funzione per Impostare i parametri iniziali del Veicolo all'interno dell'Automa*/
+void setParameters(int seg, int d)
+{   //il parametro id è l'identificativo del veicolo
+    cur_seg=seg;
+    prevI=nInters[seg][!d]; 
+    nextI=nInters[seg][d];
+    isAnomaly = (idcar==9) ? true:false;
+    Vx=I[prevI].Px;
+    Vy=I[prevI].Py;
+    dir=d;
+    /*Se il veicolo si trova nella corsia destra, incrementa il numero dei veicoli presenta nella corsia destra e viceversa*/
+    if(dir==0) 
+        S[cur_seg].nc_r++;
+    else 
+        S[cur_seg].nc_l++;
+
+    settings++; 
+}
+
+void setSpeed()
+{
+if (dir==0 &amp;&amp; S[cur_seg].nc_r!=0)
+{    
+    cur_speed=high_speed/S[cur_seg].nc_r;
+    if(S[cur_seg].expressway==1 &amp;&amp; cur_speed&gt;speedmax_way)
+    {
+      cur_speed=speedmax_way/S[cur_seg].nc_r;
+    } else if (S[cur_seg].expressway==0 &amp;&amp; cur_speed&gt;slowmax_way)
+    {
+      cur_speed=slowmax_way/S[cur_seg].nc_r;
+    }
+}else if (dir==1 &amp;&amp; S[cur_seg].nc_l!=0)
+{
+    cur_speed=high_speed/S[cur_seg].nc_l;
+    if(S[cur_seg].expressway==1 &amp;&amp; cur_speed&gt;speedmax_way)
+    {
+      cur_speed=speedmax_way/S[cur_seg].nc_l;
+    } else if (S[cur_seg].expressway==0 &amp;&amp; cur_speed&gt;slowmax_way)
+    {
+      cur_speed=slowmax_way/S[cur_seg].nc_l;
+    }
+}
+if(cur_speed&lt;slow_speed)
+{
+    cur_speed=slow_speed;
+}
+}
+
+void initSpeed()
+{
+
+setSpeed();
+
+/*Calcolo della posizione Iniziale nel Segmento*/
+
+/*Se la coordinata X dell'intersezione precedente è diversa dalla coordinata X dell'Intersezione successiva
+cioè il veicolo si sta muovendo lungo la coordinata X ed inoltre la coordinata X del veicolo è diversa dalla coordinata X
+dell'intersezione precedente, cioè il veicolo non sta partendo precisamente dall'intersezione*/
+
+    
+    posIn = S[cur_seg].length/(idcar+1);//distanza percorsa dal veicolo sul segmento
+    
+    if(I[prevI].Px!=I[nextI].Px)
+    {
+        if(I[prevI].Px&lt;I[nextI].Px)
+        {
+            Vx=Vx+posIn;
+        }else {Vx=Vx-posIn;}
+    }
+    if(I[prevI].Py!=I[nextI].Py)
+    {
+        if(I[prevI].Py&lt;I[nextI].Py)
+       {
+            Vy=Vy+posIn;
+    }else {Vy=Vy-posIn;}
+    }
+
+    tCross=(S[cur_seg].length/cur_speed)-(posIn/cur_speed); //tempo per attraversare il segmento tenendo conto della dist. percorsa
+    
+    /*Setto il messaggio con le impostazioni del veicolo*/
+    Mgen[idcar].Vx=Vx;
+    Mgen[idcar].Vy=Vy;
+    Mgen[idcar].cur_seg=cur_seg;
+    Mgen[idcar].dir=dir;
+    
+    if(isAnomaly==true)
+    {
+        Mgen[idcar].anomaly=true; //setto il messaggio con ANOMALIA
+        Mgen[idcar].VxA=Vx; //setto le coordinate del veicolo dove si è verificata l'anomalia
+        Mgen[idcar].VyA=Vy;
+    }else
+    {
+        Mgen[idcar].anomaly=false; //il veicolo non è in anomalia
+        Mgen[idcar].VxA=-1;    //rendo inattive le coordinate di Anomalia del messaggio
+        Mgen[idcar].VxA=-1;
+    }
+    /*Devo settare a -1 anche le coordinate dell'anomalia del messaggio ricevuto. Quando cambieranno farò anche Relay.*/
+    Mrec[idcar].VxA = -1;
+    Mrec[idcar].VyA = -1;   
+}
+
+/**Funzione per eseguire l'aggiornamento del prossimo segmento in cui il veicolo deve immettersi */
+void update(int id,int ns)
+{//id=parametro veicolo, ns=segmento in cui si trova/deve immettersi il veicolo
+
+meta int temp=cur_seg;//salvo il segmento corrente, prima di effettuare il cambio
+
+crossed=0;   //azzero la distanza percorsa sul segmento
+prevI=nextI; //Memorizzo il valore della mia attuale nextI in prevI (mi servirà per settare le coordinate dopo che mi troverò nel nuovo segm.)
+cur_seg=ns;  //Setto il segmento pari al parametro della funzione "ns"
+
+/*Il veicolo sta uscendo dal segmento temporaneo (l'attuale in cui è presente), quindi deve decrementare il n. tot dei veicoli*/
+    if(dir==0)
+        S[temp].nc_r--;
+    else 
+        S[temp].nc_l--;
+
+/*Ora devo incrementare il n. dei veicoli che sono entrati nel prossimo segmento*/
+//Se l'intersezione precedente è pari al primo elemento di nInters, vuol dire che sto andando verso sx-secondo verso dx
+if(nInters[ns][0]==prevI)
+{
+    nextI=nInters[ns][1]; //inevitabilmente la prossima intersezione è il secondo elemento 
+    dir=1;//setto la direzione del veicolo verso sinistra
+    S[cur_seg].nc_l++; //incremento il numero dei veicolo nella corsia di sinistra
+} 
+else
+{
+    nextI=nInters[ns][0]; //inevitabilmente la prossima intersezione è il primo elemento (il veicolo va verso dx)
+    dir=0; //setto la direzione del veicolo verso destra
+    S[cur_seg].nc_r++;//incremento il numero dei veicoli nella corsia di destra
+}
+
+Vx=I[prevI].Px; //al veicolo vengono assegnate le coordinate della nuova intersezione (è da li che parte !)
+Vy=I[prevI].Py;
+
+x=0; //Azzero il clock del veicolo perchè sono entrato nel nuovo segmento
+
+tCross=S[cur_seg].length/cur_speed; //ricalcolo il tempo di cross per il prossimo segmento
+
+}
+
+
+/**Funzione per l'invio dei messaggi,cambio di velocità*/
+void send(int id)
+{//id è il parametro del veicolo
+/*Se un veicolo è nello stato di anomalia, tCross=BP. Questo soluzione viene implementa per fermare il veicolo secondo questa logica (in base a come è stato realizzato l'automa):
+Il veicolo non ha la necessità di cambiare segmento, e tanto meno di aggiornare il suo tempo di Cross. 
+Se impongo che tCross=BP, sto dicendo che tCross=7 sempre, e quindi comunque dare la possibilità di effettuare la transizione da Car
+a Send pur non ricalcolando tCross (e gli altri parametri) e rispettando la condizione sull'invariante (x&lt;=tCross and x&lt;=BP).
+*/
+if(isAnomaly==true)
+{
+    tCross = BP;
+
+}
+else{
+/*Verifico dove effettuare l'incremento della velocità: se varia x su Vx, se varia y su Vy*/
+if(I[prevI].Px!=I[nextI].Px)
+{
+    if(I[prevI].Px&lt;I[nextI].Px)
+    {
+    Vx=Vx+BP*cur_speed;
+    }else {Vx=Vx-BP*cur_speed;}
+}
+if(I[prevI].Py!=I[nextI].Py)
+{
+    if(I[prevI].Py&lt;I[nextI].Py)
+    {
+    Vy=Vy+BP*cur_speed;
+    }else {Vy=Vy-BP*cur_speed;}
+}
+
+/*Setto il messaggio da inviare ad ogni tratto percorso*/
+Mgen[id].cur_seg=cur_seg;
+Mgen[id].Vx=Vx;
+Mgen[id].Vy=Vy;
+Mgen[id].dir=dir;
+Mgen[id].cur_seg=GEN; //Il messaggio viene settato come generato
+
+/*Se il veicolo (id) ha ricevuto anche l'anomalia, allora oltre a inviare il messaggio
+da lui generato, deve eseguire il Relay del messaggio contenente l'anomalia (ricevuto da un altro veicolo)
+quindi vado a settare i parametri per inviare l'anomalia.
+Invierò il messaggio di RELAY con la funzione sendRelay() subito (quindi il modello sarà dotato di uno stato Send, così
+se conterrà l'anomalia la invierà subito).
+*/
+if(anomaly_rcv==true)
+{
+    Mgen[id].anomaly=true;
+    Mgen[id].VxA=VxA;
+    Mgen[id].VyA=VyA;
+}
+
+crossed=crossed+BP*cur_speed; //Aggiorno i metri percorsi
+
+/*Regoliamo la velocità in base al traffico, e quindi in base al numero dei veicoli
+  Controllo con gli IF effettuato prima per il segmento destro e
+  dopo per il segmento sinistro
+*/
+
+setSpeed();
+
+if (crossed&gt;=(S[cur_seg].length-100)) {cur_speed=slow_speed;} //Il veicolo si avvicina all'incrocio e deve rallentare...
+
+tCross = ((S[cur_seg].length-crossed)/cur_speed);
+}
+x=0;
+//Nel modello invio al prossimo BP, e quindi quando y==BP (nella guardia) invio e percorro la transazione...
+}
+
+void sendRelay(int id)
+{//id è l'id del veicolo
+/*Setto i parametri del messaggio di Relay da inviare*/
+Mgen[id].type=REL;
+}
+
+bool inRange(int id_tx)
+{//id_tx è l'id del veicolo che sta trasmettendo il messaggio che Car deve ricevere
+//La funzione viene creata per dare in modo al veicolo che si trova in un determinato raggio di ricevere il messaggio
+bool ricevuto=false; //imposto inizialmente che il veicolo non ha ricevuto il messaggio
+
+/*RICEZIONE del Messaggio*/
+/*Se il veicolo che deve ricevere il messaggio si trova nello stesso segmento;
+e se il veicolo che sta trasmettendo, contiene un messaggio con anomalia;
+e se il veicolo Car che deve ricevere il messaggio non ha ancora ricevuto l'anomalia*/
+if(cur_seg==Mgen[id_tx].cur_seg &amp;&amp; Mgen[id_tx].anomaly==true and anomaly_rcv==false)
+{
+if(dir==Mgen[id_tx].dir) //Se la direzione del veicolo Car che deve ricevere il mess è pari a quella del veicolo che ha trasmesso il mess
+{
+    if(Mgen[id_tx].type==GEN) //Se il messaggio trasmesso è di tipo generato
+    {
+        if(Vx==Mgen[id_tx].Vx) //Se la coordinata Vx del veicolo che deve ricevere, è uguale a quella del veicolo che sta trasmettendo
+        {
+            /*Se il veicolo che deve ricevere si trova nel raggio di chi sta trasmettendo, ed inoltre chi sta trasmettendo (id_tx)
+            si trova davanti a chi deve ricevere (veicolo Car con coordinata V)*/
+            if((Vy-Mgen[id_tx].Vy)&lt;0 &amp;&amp; abs(Vy-Mgen[id_tx].Vy&lt;=r)) ricevuto=true; 
+        }
+        if(Vy==Mgen[id_tx].Vy) //se la coordinata Vy del veicolo che deve ricevere, è uguale a quella del veicolo che sta trasmettendo
+        {
+
+            if((Vx-Mgen[id_tx].Vx)&lt;0 &amp;&amp; abs(Vx-Mgen[id_tx].Vx&lt;=r)) ricevuto=true; 
+        }
+    } 
+    else if (Mgen[id_tx].type==REL) //se il messaggio trasmesso è di tipo relayed
+    {
+        if(Vx==Mgen[id_tx].Vx) //se la coordinata Vx del veicolo che deve ricevere è uguale a quella del veicolo che sta trasmettendo
+        {
+            /*Se il veicolo che deve ricevere si trova nel raggio di chi sta trasmettendo, ed inoltre chi sta trasmettendo (id_tx)
+            si trova dietro a chi deve ricevere (veicolo Car con coordinata V)*/ 
+            if((Vy-Mgen[id_tx].Vy)&gt;0 &amp;&amp; abs(Vy-Mgen[id_tx].Vy&lt;=r)) ricevuto=true; 
+        }
+        if(Vy==Mgen[id_tx].Vy) //se la coordinata Vy del veicolo che deve ricevere è uguale a quella del veicolo che sta trasmettendo
+        {
+            //se il veicolo che deve ricevere si trova nel raggio di chi sta trasmettendo, 
+            if((Vx-Mgen[id_tx].Vx)&gt;0 &amp;&amp; abs(Vx-Mgen[id_tx].Vx&lt;=r)) ricevuto=true; 
+        }
+    }
+
+}
+if (dir!=Mgen[id_tx].dir)//se la direzione di percorrenza del veicolo è diversa da chi sta trasmettendo
+{//indipendentemente dalla posizione, verifico se sono nello stesso raggio per poter ricevere il messaggio (per comprendere leggere l'IF più esterno)
+  if(Vx==Mgen[id_tx].Vx) //significa che sta variando la coordinata Vy
+    {
+        if(abs(Vy-Mgen[id_tx].Vy)&lt;=r) ricevuto=true; //vedo se la differenza tra le coordinate rientra nel raggio...
+    }  
+  if(Vy==Mgen[id_tx].Vy)
+    {
+        if(abs(Vx-Mgen[id_tx].Vx)&lt;=r) ricevuto=true;
+    }     
+}
+
+}
+    return ricevuto;
+}
+
+void receive(int id_tx)
+{//id_tx è l'identificativo del veicolo che sta trasmettendo il messaggio
+anomaly_rcv=true;    //il Veicolo Car ha ricevuto l'anomalia
+//recupero le coordinate dell'anomalia dal messaggio
+VxA=Mgen[id_tx].VxA;
+VyA=Mgen[id_tx].VyA;
+
+if(distance(Vx,Vy,VxA,VyA) &gt;= dist) count++; //100 è la distanza espressa in metri
+
+/*Se il messaggio che si sta inviando è di tipo Generato e la direzione di percorrenza è diversa
+oppure il messaggio che si sta inviando è di tipo Relay e la direzione è la stessa, allora...
+Dalla Tesi, si riscontra che: I dati generati vengono propagati indietro da quelli che viaggiano in direzione opposta
+Questi dati successivamente verranno propagati come messaggi di Relay dai veicoli che sono presenti sulla stessa corsia 
+*/
+
+if((Mgen[id_tx].type==GEN and dir !=Mgen[id_tx].dir) || (Mgen[id_tx].type==REL and dir==Mgen[id_tx].dir))
+{
+    Mrec[idcar].VxA=VxA; //Scrivo le coordinate dell'anomalia nel buffer di ricezione del veicolo Car
+    Mrec[idcar].VyA=VyA;
+}
+
+}
+
+bool inRangeRSU(int id_r)
+{
+//id_r è l'id dell'RSU che sta trasmettendo il messaggio che il veicolo Car deve ricevere
+bool ricevuto=false;
+
+if(anomaly_rcv==false and distance(Vx,Vy,RSUAnomaly[id_r].Vx,RSUAnomaly[id_r].Vy) &lt;= RR)
+{
+ricevuto=true;
+}
+
+/*if(anomaly_rcv==false)
+{
+    if(Vx==RSUAnomaly[id_r].Vx)  //sta variando la coordinata y
+    {
+        if(abs(Vy-RSUAnomaly[id_r].Vy&lt;=RR)) ricevuto=true;
+    }else if(Vy==RSUAnomaly[id_r].Vy)  //sta variando la coordinata x
+    {
+        if(abs(Vx-RSUAnomaly[id_r].Vx&lt;=RR)) ricevuto=true;
+    }
+}*/
+
+return ricevuto;
+}
+
+void receiveRSU(int id_r)
+{//id_r è l'identificativo della RSU che sta trasmettendo il messaggio
+anomaly_rcv=true;    //il Veicolo Car ha ricevuto l'anomalia
+
+//Recupero le coordinate dell'anomalia dall'RSU e le scrivo nel veicolo
+VxA=RSUAnomaly[id_r].VxA;
+VyA=RSUAnomaly[id_r].VyA;
+
+//Scrivo le coordinate dell'anomalia nel buffer di ricezione del veicolo Car
+Mrec[idcar].VxA=VxA;
+Mrec[idcar].VyA=VyA;
+
+if(distance(Vx,Vy,VxA,VyA) &gt;= dist) count++;
+
+}
+
+bool relayReady() {return Mrec[idcar].VxA == -1 and Mrec[idcar].VyA == -1 ? false:true;}
+bool segEnabled(int id_seg) { return Map[nextI][id_seg]!=-1 and Map[nextI][id_seg]!=cur_seg ? true:false;}
+</declaration>
+		<location id="id0" x="926" y="306" color="#ff0000">
+			<name x="943" y="298">Send</name>
+			<committed/>
+		</location>
+		<location id="id1" x="663" y="306" color="#00ff00">
+			<name x="654" y="272">Car</name>
+			<label kind="invariant" x="586" y="238">x&lt;=tCross and x&lt;=BP</label>
+		</location>
+		<location id="id2" x="467" y="306" color="#ffa500">
+			<committed/>
+		</location>
+		<location id="id3" x="272" y="306" color="#ffa500">
+			<committed/>
+		</location>
+		<location id="id4" x="272" y="408" color="#0000ff">
+			<name x="255" y="434">Start</name>
+			<committed/>
+		</location>
+		<init ref="id4"/>
+		<transition color="#0000ff">
+			<source ref="id1"/>
+			<target ref="id1"/>
+			<label kind="select" x="765" y="502">e:id_c</label>
+			<label kind="guard" x="765" y="519">x&lt;BP and
+inRange(e) and
+!isAnomaly</label>
+			<label kind="synchronisation" x="765" y="570">msg[e]?</label>
+			<label kind="assignment" x="765" y="587">receive(e)</label>
+			<nail x="663" y="493"/>
+			<nail x="867" y="493"/>
+		</transition>
+		<transition color="#0000ff">
+			<source ref="id1"/>
+			<target ref="id1"/>
+			<label kind="select" x="476" y="502">RSUr:id_i</label>
+			<label kind="guard" x="476" y="519">x&lt;BP and 
+inRangeRSU(RSUr) and
+!isAnomaly</label>
+			<label kind="synchronisation" x="476" y="570">alert[RSUr]?</label>
+			<label kind="assignment" x="476" y="587">receiveRSU(RSUr)</label>
+			<nail x="663" y="493"/>
+			<nail x="476" y="493"/>
+		</transition>
+		<transition color="#0000ff">
+			<source ref="id1"/>
+			<target ref="id1"/>
+			<label kind="select" x="629" y="128">s:int[0,3]</label>
+			<label kind="guard" x="519" y="145">x&gt;=tCross and segEnabled(s) and !isAnomaly</label>
+			<label kind="assignment" x="587" y="162">update(idcar,Map[nextI][s])</label>
+			<nail x="484" y="187"/>
+			<nail x="859" y="187"/>
+		</transition>
+		<transition color="#ff0000">
+			<source ref="id0"/>
+			<target ref="id1"/>
+			<label kind="guard" x="935" y="247">!relayReady()</label>
+			<nail x="926" y="221"/>
+		</transition>
+		<transition color="#00ff00">
+			<source ref="id0"/>
+			<target ref="id1"/>
+			<label kind="guard" x="935" y="332">relayReady() and !isAnomaly</label>
+			<label kind="synchronisation" x="935" y="349">msg[idcar]!</label>
+			<label kind="assignment" x="935" y="366">sendRelay(idcar)</label>
+			<nail x="926" y="400"/>
+		</transition>
+		<transition>
+			<source ref="id1"/>
+			<target ref="id0"/>
+			<label kind="guard" x="799" y="272">x==BP</label>
+			<label kind="synchronisation" x="790" y="289">msg[idcar]!</label>
+			<label kind="assignment" x="790" y="306">send(idcar)</label>
+		</transition>
+		<transition color="#00ff00">
+			<source ref="id2"/>
+			<target ref="id1"/>
+			<label kind="guard" x="391" y="357">isAnomaly</label>
+			<label kind="assignment" x="348" y="374">spawn RSU(nextI,idcar),
+spawn RSU(prevI,idcar)</label>
+			<nail x="467" y="374"/>
+		</transition>
+		<transition color="#ff0000">
+			<source ref="id2"/>
+			<target ref="id1"/>
+			<label kind="guard" x="433" y="221">!isAnomaly</label>
+			<nail x="467" y="238"/>
+		</transition>
+		<transition>
+			<source ref="id3"/>
+			<target ref="id2"/>
+			<label kind="guard" x="323" y="272">settings==Nc</label>
+			<label kind="assignment" x="331" y="289">initSpeed()</label>
+		</transition>
+		<transition>
+			<source ref="id4"/>
+			<target ref="id3"/>
+			<label kind="select" x="136" y="332">seg:id_s,
+inters:int[0,1]</label>
+			<label kind="assignment" x="85" y="366">setParameters(seg,inters)</label>
+		</transition>
+	</template>
+	<template>
+		<name>RSU</name>
+		<parameter>const id_i idR, int idc</parameter>
+		<declaration>clock y;
+
+void setAlert(int idc)
+{
+    RSUAnomaly[idR].Vx = I[idR].Px;
+    RSUAnomaly[idR].Vy = I[idR].Py; 
+    RSUAnomaly[idR].VxA = Mgen[idc].VxA;
+    RSUAnomaly[idR].VyA = Mgen[idc].VyA;
+}</declaration>
+		<location id="id5" x="-612" y="-51" color="#00ff00">
+			<name x="-637" y="-85">Anomaly</name>
+			<label kind="invariant" x="-637" y="-34">y&lt;=BP</label>
+		</location>
+		<location id="id6" x="-790" y="-51" color="#0000ff">
+			<name x="-799" y="-85">Idle</name>
+			<committed/>
+		</location>
+		<init ref="id6"/>
+		<transition>
+			<source ref="id5"/>
+			<target ref="id5"/>
+			<label kind="guard" x="-467" y="-85">y == BP</label>
+			<label kind="synchronisation" x="-467" y="-68">alert[idR]!</label>
+			<label kind="assignment" x="-467" y="-51">y = 0</label>
+			<nail x="-476" y="-110"/>
+			<nail x="-476" y="0"/>
+		</transition>
+		<transition>
+			<source ref="id6"/>
+			<target ref="id5"/>
+			<label kind="assignment" x="-756" y="-76">setAlert(idc)</label>
+		</transition>
+	</template>
+	<system>system Car;
+
+progress {count;}</system>
+	<queries>
+		<query>
+			<formula>Pr [&lt;=650] (&lt;&gt; count == 19)
+			</formula>
+			<comment>
+			</comment>
+		</query>
+		<query>
+			<formula>Pr [&lt;=650] (&lt;&gt; count == 18)
+			</formula>
+			<comment>
+			</comment>
+		</query>
+		<query>
+			<formula>Pr [&lt;=650] (&lt;&gt; count == 15)
+			</formula>
+			<comment>
+			</comment>
+		</query>
+		<query>
+			<formula>Pr [&lt;=650] (&lt;&gt; count == 10)
+			</formula>
+			<comment>
+			</comment>
+		</query>
+		<query>
+			<formula>simulate 10 [&lt;=2000]{count}
+			</formula>
+			<comment>
+			</comment>
+		</query>
+	</queries>
+</nta>
