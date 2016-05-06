@@ -5,6 +5,6 @@ Data dissemination in VANETs can be used to inform drivers or vehicles about tra
 Download [Uppaal 4.1.19 with SMC](http://www.it.uu.se/research/group/darts/uppaal/download.shtml).
 For more detailed information on using and understanding this project, you should read the file on this github repository called **Relazione Linguaggi e Compilatori**.
 
-Authors:
+###Authors:
 * [Pietro Tedeschi] (https://it.linkedin.com/in/pietrotedeschi)
 * [Mauro Losciale] (https://it.linkedin.com/in/maurolosciale)
