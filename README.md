@@ -3,7 +3,7 @@ With UPPAAL-SMC, a Statistical Model Checker for Priced Timed Automata, we have 
 Data dissemination in VANETs can be used to inform drivers or vehicles about traffic jams and to propagate emergency warnings among the vehicles (incident or accidents) to avoid any collision.
 
 Download [Uppaal 4.1.19 with SMC](http://www.it.uu.se/research/group/darts/uppaal/download.shtml).
-For more detailed information on using and understanding this project, you should read the file on this github repository called **Relazione Linguaggi e Compilatori**.
+For more detailed information on using and understanding this project, you should read the file on this github repository called [Relazione Linguaggi e Compilatori](./Relazione%20Linguaggi%20e%20Compilatori.pdf) .
 
 ##Authors
 * [Pietro Tedeschi] (https://it.linkedin.com/in/pietrotedeschi)
